@@ -7,7 +7,9 @@ Ard-native clients for Cloudflare services. Public APIs belong in Ard; small Go 
 ## Structure
 
 - `d1.ard`: public D1 API
-- `ffi/`: D1 `database/sql` adapter
+- `r2.ard`: public R2 API
+- `ffi/d1.go`: D1 `database/sql` adapter
+- `ffi/r2/`: R2 S3-compatible adapter
 - `ard.toml`: Ard package manifest
 - `go.mod`: Go FFI module
 

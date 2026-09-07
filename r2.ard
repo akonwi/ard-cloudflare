@@ -1,0 +1,554 @@
+use ard/testing
+use ard/unsafe
+
+use go:bytes
+use go:context
+use go:encoding/hex
+use go:github.com/akonwi/ard-cloudflare/ffi/r2 as ffi
+use go:github.com/aws/aws-sdk-go-v2/aws
+use go:github.com/aws/aws-sdk-go-v2/config as awsconfig
+use go:github.com/aws/aws-sdk-go-v2/credentials
+use go:github.com/aws/aws-sdk-go-v2/service/s3
+use go:github.com/aws/aws-sdk-go-v2/service/s3/types as s3types
+use go:io
+use go:net/http
+use go:strconv
+use go:strings
+use go:time
+
+let MAX_BUFFERED_OBJECT_BYTES: Int = 1024 * 1024 * 1024
+
+private fn error_message(error: Error) Str {
+  error.error()
+}
+
+enum Jurisdiction {
+  global,
+  eu,
+  us,
+  fedramp,
+}
+
+impl Jurisdiction {
+  private fn to_wire() Str {
+    match self {
+      Jurisdiction::global => "",
+      Jurisdiction::eu => "eu",
+      Jurisdiction::us => "us",
+      Jurisdiction::fedramp => "fedramp",
+    }
+  }
+}
+
+struct Config {
+  account_id: Str,
+  access_key_id: Str,
+  secret_access_key: Str,
+  jurisdiction: Jurisdiction?,
+  request_timeout_ms: Int64?,
+}
+
+struct Client {
+  handle: mut s3::Client,
+}
+
+fn connect(config: Config) Client!Str {
+  let timeout_ms = try validate_config(config)
+  let http_client = mut http::Client{Timeout: time::Duration::from(timeout_ms) * time::Millisecond}
+  let aws_config = try awsconfig::LoadDefaultConfig(
+    context::Background(),
+    awsconfig::WithRegion("auto"),
+    awsconfig::WithCredentialsProvider(
+      credentials::NewStaticCredentialsProvider(config.access_key_id, config.secret_access_key, ""),
+    ),
+    awsconfig::WithHTTPClient(http_client),
+    awsconfig::WithRequestChecksumCalculation(aws::RequestChecksumCalculationWhenRequired),
+    awsconfig::WithResponseChecksumValidation(aws::ResponseChecksumValidationWhenRequired),
+  ).map_err(error_message)
+  let endpoint = endpoint(config.account_id, config.jurisdiction.or(Jurisdiction::global))
+  let handle = s3::NewFromConfig(aws_config, fn(options: mut s3::Options) {
+    options.BaseEndpoint = aws::String(endpoint)
+  })
+  Result::ok(Client{handle: handle})
+}
+
+private fn validate_config(config: Config) Int64!Str {
+  let account_id = strings::TrimSpace(config.account_id)
+  if account_id.size() != 32 {
+    Result::err("cloudflare r2: account ID must be 32 hexadecimal characters")
+  } else {
+    try hex::DecodeString(
+      account_id,
+    ).map_err(fn(_) Str {
+      "cloudflare r2: account ID must be 32 hexadecimal characters"
+    })
+    if strings::TrimSpace(config.access_key_id) == "" {
+      Result::err("cloudflare r2: access key ID is required")
+    } else if strings::TrimSpace(config.secret_access_key) == "" {
+      Result::err("cloudflare r2: secret access key is required")
+    } else {
+      let timeout_ms = config.request_timeout_ms.or(Int64::from(120_000))
+      match timeout_ms <= Int64::from(0) or timeout_ms > Int64::from(86_400_000) {
+        true => Result::err("cloudflare r2: request timeout must be between 1ms and 24h"),
+        false => Result::ok(timeout_ms),
+      }
+    }
+  }
+}
+
+private fn endpoint(account_id: Str, jurisdiction: Jurisdiction) Str {
+  match jurisdiction {
+    Jurisdiction::global => "https://{account_id}.r2.cloudflarestorage.com",
+    _ => "https://{account_id}.{jurisdiction.to_wire()}.r2.cloudflarestorage.com",
+  }
+}
+
+enum StorageClass {
+  standard,
+  infrequent_access,
+}
+
+struct PutOptions {
+  content_type: Str?,
+  cache_control: Str?,
+  content_disposition: Str?,
+  content_encoding: Str?,
+  storage_class: StorageClass?,
+  custom_metadata: [Str: Str]?,
+}
+
+struct ByteRange {
+  start: Int64,
+  end: Int64?,
+}
+
+fn ByteRange::from(start: Int64) ByteRange {
+  ByteRange{start: start}
+}
+
+fn ByteRange::between(start: Int64, end: Int64) ByteRange {
+  ByteRange{start: start, end: end}
+}
+
+struct GetOptions {
+  range: ByteRange?,
+}
+
+struct ListOptions {
+  prefix: Str?,
+  delimiter: Str?,
+  cursor: Str?,
+  limit: Int?,
+}
+
+struct PutResult {
+  etag: Str?,
+  version: Str?,
+}
+
+struct ObjectInfo {
+  key: Str,
+  size: Int64,
+  etag: Str?,
+  last_modified: Str?,
+  content_type: Str?,
+  cache_control: Str?,
+  content_disposition: Str?,
+  content_encoding: Str?,
+  storage_class: StorageClass?,
+  custom_metadata: [Str: Str],
+}
+
+struct BufferedObject {
+  info: ObjectInfo,
+  body: [Byte],
+}
+
+struct ListPage {
+  objects: [ObjectInfo],
+  common_prefixes: [Str],
+  cursor: Str?,
+}
+
+fn put(client: Client, bucket: Str, key: Str, body: io::Reader, options: PutOptions?) PutResult!Str {
+  try validate_object(bucket, key)
+  let value = options.or(PutOptions{})
+  let input = mut s3::PutObjectInput{
+    Bucket: aws::String(bucket),
+    Key: aws::String(key),
+    Body: body,
+  }
+  match value.content_type {
+    content_type => { input.ContentType = aws::String(content_type) },
+    _ => (),
+  }
+  match value.cache_control {
+    cache_control => { input.CacheControl = aws::String(cache_control) },
+    _ => (),
+  }
+  match value.content_disposition {
+    content_disposition => { input.ContentDisposition = aws::String(content_disposition) },
+    _ => (),
+  }
+  match value.content_encoding {
+    content_encoding => { input.ContentEncoding = aws::String(content_encoding) },
+    _ => (),
+  }
+  match value.custom_metadata {
+    custom_metadata => { input.Metadata = custom_metadata },
+    _ => (),
+  }
+  match value.storage_class {
+    storage_class => {
+      input.StorageClass = match storage_class {
+        StorageClass::standard => s3types::StorageClassStandard,
+        StorageClass::infrequent_access => s3types::StorageClassStandardIa,
+      }
+    },
+    _ => (),
+  }
+  let output = try client.handle.PutObject(context::Background(), input).map_err(error_message)
+  Result::ok(
+    PutResult{etag: pointer_str(output.ETag).map(trim_etag), version: pointer_str(output.VersionId)},
+  )
+}
+
+fn put_bytes(client: Client, bucket: Str, key: Str, body: [Byte], options: PutOptions?) PutResult!Str {
+  let reader = bytes::NewReader(mut body)
+  put(client, bucket, key, reader, options)
+}
+
+fn download(client: Client, bucket: Str, key: Str, destination: io::Writer, options: GetOptions?) ObjectInfo?!Str {
+  match get(client, bucket, key, options) {
+    ok(object) => {
+      match object {
+        object => {
+          defer object.Body.Close()
+          let _ = try io::Copy(destination, object.Body).map_err(error_message)
+          Result::ok(Maybe::new(info_from_get(key, object)))
+        },
+        _ => Result::ok(Maybe::new()),
+      }
+    },
+    err(error) => Result::err(error),
+  }
+}
+
+fn get_bytes(client: Client, bucket: Str, key: Str, max_bytes: Int64, options: GetOptions?) BufferedObject?!Str {
+  try validate_max_bytes(max_bytes)
+  match get(client, bucket, key, options) {
+    ok(found) => {
+      match found {
+        object => {
+          defer object.Body.Close()
+          let limited = io::LimitReader(object.Body, max_bytes + Int64::from(1))
+          mut body = try io::ReadAll(limited).map_err(error_message)
+          if Int64::from(body.size()) > max_bytes {
+            Result::err("cloudflare r2: object {bucket}/{key} exceeds {max_bytes} bytes")
+          } else {
+            Result::ok(Maybe::new(BufferedObject{info: info_from_get(key, object), body: body}))
+          }
+        },
+        _ => Result::ok(Maybe::new()),
+      }
+    },
+    err(error) => Result::err(error),
+  }
+}
+
+private fn get(client: Client, bucket: Str, key: Str, options: GetOptions?) Maybe<mut s3::GetObjectOutput>!Str {
+  try validate_object(bucket, key)
+  let input = mut s3::GetObjectInput{Bucket: aws::String(bucket), Key: aws::String(key)}
+  match options.or(GetOptions{}).range {
+    range => { input.Range = aws::String(range_header(range)) },
+    _ => (),
+  }
+  match client.handle.GetObject(context::Background(), input) {
+    ok(output) => Result::ok(Maybe::new(output)),
+    err(error) => {
+      match ffi::IsNotFound(error) {
+        true => Result::ok(Maybe::new()),
+        false => Result::err(error.error()),
+      }
+    },
+  }
+}
+
+fn head(client: Client, bucket: Str, key: Str) ObjectInfo?!Str {
+  try validate_object(bucket, key)
+  let input = mut s3::HeadObjectInput{Bucket: aws::String(bucket), Key: aws::String(key)}
+  match client.handle.HeadObject(context::Background(), input) {
+    ok(output) => Result::ok(Maybe::new(info_from_head(key, output))),
+    err(error) => {
+      match ffi::IsNotFound(error) {
+        true => Result::ok(Maybe::new()),
+        false => Result::err(error.error()),
+      }
+    },
+  }
+}
+
+fn delete(client: Client, bucket: Str, key: Str) Void!Str {
+  try validate_object(bucket, key)
+  let input = mut s3::DeleteObjectInput{Bucket: aws::String(bucket), Key: aws::String(key)}
+  client.handle.DeleteObject(
+    context::Background(),
+    input,
+  ).map(fn(_) {
+    ()
+  }).map_err(error_message)
+}
+
+fn list(client: Client, bucket: Str, options: ListOptions?) ListPage!Str {
+  try validate_bucket(bucket)
+  let value = options.or(ListOptions{})
+  try validate_list_options(value)
+  let input = mut s3::ListObjectsV2Input{Bucket: aws::String(bucket)}
+  match value.prefix {
+    prefix => { input.Prefix = aws::String(prefix) },
+    _ => (),
+  }
+  match value.delimiter {
+    delimiter => { input.Delimiter = aws::String(delimiter) },
+    _ => (),
+  }
+  match value.cursor {
+    cursor => { input.ContinuationToken = aws::String(cursor) },
+    _ => (),
+  }
+  match value.limit {
+    limit => { input.MaxKeys = aws::Int32(Int32::from(limit)) },
+    _ => (),
+  }
+  let output = try client.handle.ListObjectsV2(context::Background(), input).map_err(error_message)
+  let objects = mut List::new<ObjectInfo>()
+  for object in output.Contents {
+    objects.push(info_from_list(object))
+  }
+  let prefixes = mut List::new<Str>()
+  for prefix in output.CommonPrefixes {
+    match pointer_str(prefix.Prefix) {
+      value => prefixes.push(value),
+      _ => (),
+    }
+  }
+  Result::ok(
+    ListPage{
+      objects: objects.@,
+      common_prefixes: prefixes.@,
+      cursor: match pointer_bool(output.IsTruncated) {
+        true => pointer_str(output.NextContinuationToken),
+        false => Maybe::new(),
+      },
+    },
+  )
+}
+
+private fn validate_bucket(bucket: Str) Void!Str {
+  match strings::TrimSpace(bucket) == "" {
+    true => Result::err("cloudflare r2: bucket is required"),
+    false => Result::ok(()),
+  }
+}
+
+private fn validate_object(bucket: Str, key: Str) Void!Str {
+  try validate_bucket(bucket)
+  match key == "" {
+    true => Result::err("cloudflare r2: object key is required"),
+    false => Result::ok(()),
+  }
+}
+
+private fn validate_list_options(options: ListOptions) Void!Str {
+  match options.limit {
+    limit => {
+      match limit < 0 or limit > 1000 {
+        true => Result::err("cloudflare r2: list limit must be between 0 and 1000"),
+        false => Result::ok(()),
+      }
+    },
+    _ => Result::ok(()),
+  }
+}
+
+private fn validate_max_bytes(max_bytes: Int64) Void!Str {
+  match max_bytes < Int64::from(0) or max_bytes > Int64::from(MAX_BUFFERED_OBJECT_BYTES) {
+    true => Result::err("cloudflare r2: max bytes must be between 0 and {MAX_BUFFERED_OBJECT_BYTES}"),
+    false => Result::ok(()),
+  }
+}
+
+private fn range_header(range: ByteRange) Str {
+  match range.end {
+    end => "bytes={range.start}-{end}",
+    _ => "bytes={range.start}-",
+  }
+}
+
+private fn pointer_str(value: mut Str) Str? {
+  match unsafe::is_nil(value) {
+    true => Maybe::new(),
+    false => Maybe::new(value.@),
+  }
+}
+
+private fn pointer_int64(value: mut Int64) Int64 {
+  match unsafe::is_nil(value) {
+    true => Int64::from(0),
+    false => value.@,
+  }
+}
+
+private fn pointer_bool(value: mut Bool) Bool {
+  match unsafe::is_nil(value) {
+    true => false,
+    false => value.@,
+  }
+}
+
+private fn pointer_time(value: mut time::Time) Str? {
+  match unsafe::is_nil(value) {
+    true => Maybe::new(),
+    false => Maybe::new(value.Format(time::RFC3339Nano)),
+  }
+}
+
+private fn trim_etag(value: Str) Str {
+  strings::Trim(value, "\"")
+}
+
+private fn storage_class(value: Str) StorageClass? {
+  match value {
+    "STANDARD" => Maybe::new(StorageClass::standard),
+    "STANDARD_IA" => Maybe::new(StorageClass::infrequent_access),
+    _ => Maybe::new(),
+  }
+}
+
+private fn object_size(content_length: mut Int64, content_range: mut Str) Int64 {
+  match pointer_str(content_range) {
+    range => {
+      let parts = strings::Split(range, "/")
+      match parts.at(parts.size() - 1) {
+        total => {
+          match strconv::ParseInt(total, 10, 64) {
+            ok(size) => size,
+            err(_) => pointer_int64(content_length),
+          }
+        },
+        _ => pointer_int64(content_length),
+      }
+    },
+    _ => pointer_int64(content_length),
+  }
+}
+
+private fn metadata(value: [Str: Str]) [Str: Str] {
+  match unsafe::is_nil(value) {
+    true => [:],
+    false => value,
+  }
+}
+
+private fn info_from_get(key: Str, output: mut s3::GetObjectOutput) ObjectInfo {
+  ObjectInfo{
+    key: key,
+    size: object_size(output.ContentLength, output.ContentRange),
+    etag: pointer_str(output.ETag).map(trim_etag),
+    last_modified: pointer_time(output.LastModified),
+    content_type: pointer_str(output.ContentType),
+    cache_control: pointer_str(output.CacheControl),
+    content_disposition: pointer_str(output.ContentDisposition),
+    content_encoding: pointer_str(output.ContentEncoding),
+    storage_class: storage_class("{output.StorageClass}"),
+    custom_metadata: metadata(output.Metadata),
+  }
+}
+
+private fn info_from_head(key: Str, output: mut s3::HeadObjectOutput) ObjectInfo {
+  ObjectInfo{
+    key: key,
+    size: pointer_int64(output.ContentLength),
+    etag: pointer_str(output.ETag).map(trim_etag),
+    last_modified: pointer_time(output.LastModified),
+    content_type: pointer_str(output.ContentType),
+    cache_control: pointer_str(output.CacheControl),
+    content_disposition: pointer_str(output.ContentDisposition),
+    content_encoding: pointer_str(output.ContentEncoding),
+    storage_class: storage_class("{output.StorageClass}"),
+    custom_metadata: metadata(output.Metadata),
+  }
+}
+
+private fn info_from_list(object: s3types::Object) ObjectInfo {
+  ObjectInfo{
+    key: pointer_str(object.Key).or(""),
+    size: pointer_int64(object.Size),
+    etag: pointer_str(object.ETag).map(trim_etag),
+    last_modified: pointer_time(object.LastModified),
+    storage_class: storage_class("{object.StorageClass}"),
+    custom_metadata: [:],
+  }
+}
+
+test fn r2_endpoints_include_the_jurisdiction() Void!Str {
+  let account_id = "0123456789abcdef0123456789abcdef"
+  try testing::assert(
+    endpoint(account_id, Jurisdiction::global) == "https://{account_id}.r2.cloudflarestorage.com",
+    "renders the global endpoint",
+  )
+  testing::assert(
+    endpoint(account_id, Jurisdiction::eu) == "https://{account_id}.eu.r2.cloudflarestorage.com",
+    "renders the EU endpoint",
+  )
+}
+
+test fn invalid_r2_accounts_fail_before_connecting() Void!Str {
+  match validate_config(
+    Config{
+      account_id: "invalid",
+      access_key_id: "access",
+      secret_access_key: "secret",
+    },
+  ) {
+    ok(_) => testing::fail("an invalid account ID should fail"),
+    err(message) => {
+      testing::assert(
+        message == "cloudflare r2: account ID must be 32 hexadecimal characters",
+        "reports the invalid account ID",
+      )
+    },
+  }
+}
+
+test fn byte_ranges_render_for_s3() Void!Str {
+  let from = range_header(ByteRange::from(Int64::from(5)))
+  try testing::assert(from == "bytes=5-", "renders an open range")
+  let between = range_header(ByteRange::between(Int64::from(5), Int64::from(9)))
+  testing::assert(between == "bytes=5-9", "renders a bounded range")
+}
+
+test fn ranged_objects_report_the_full_size() Void!Str {
+  let size = object_size(aws::Int64(Int64::from(5)), aws::String("bytes 0-4/20"))
+  testing::assert(size == Int64::from(20), "uses the total from content-range")
+}
+
+test fn list_limits_are_bounded() Void!Str {
+  match validate_list_options(ListOptions{limit: 1001}) {
+    ok => testing::fail("an oversized page should fail"),
+    err(message) => {
+      testing::assert(
+        message == "cloudflare r2: list limit must be between 0 and 1000",
+        "reports the list limit",
+      )
+    },
+  }
+}
+
+test fn storage_classes_map_to_s3_values() Void!Str {
+  try testing::assert(
+    storage_class("STANDARD_IA").expect("storage class") == StorageClass::infrequent_access,
+    "maps infrequent access",
+  )
+  testing::assert(storage_class("unknown").is_none(), "ignores unknown storage classes")
+}

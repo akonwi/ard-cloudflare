@@ -1,6 +1,6 @@
 # ard-cloudflare
 
-Ard-native clients for Cloudflare services. The first module provides D1 through the familiar [`ard-sql`](https://github.com/akonwi/ard-sql) database API.
+Ard-native clients for Cloudflare D1 and R2.
 
 ## D1
 
@@ -43,6 +43,32 @@ let selected_rows = results.at(1).expect("select result").rows
 ```
 
 D1's HTTP API does not provide connection-scoped transactions. Calling `db.begin()` returns an unsupported-operation error rather than pretending to provide normal transaction semantics.
+
+## R2
+
+Create an R2 client with S3-compatible access-key credentials, then use it to upload, download, inspect, delete, and list objects.
+
+```ard
+use cloudflare/r2
+
+let client = try r2::connect(r2::Config{
+  account_id: "0123456789abcdef0123456789abcdef",
+  access_key_id: "access-key-id",
+  secret_access_key: "secret-access-key",
+})
+
+try r2::put_bytes(
+  client,
+  "assets",
+  "avatars/ada.png",
+  image,
+  r2::PutOptions{content_type: "image/png"},
+)
+
+let object = try r2::get_bytes(client, "assets", "avatars/ada.png", Int64::from(5_000_000))
+```
+
+The initial API includes streaming uploads and downloads, bounded buffered downloads, metadata lookup, deletion, byte ranges, jurisdiction-specific endpoints, and cursor-based listing.
 
 ## Development
 
