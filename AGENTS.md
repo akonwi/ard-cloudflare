@@ -8,6 +8,7 @@ Ard-native clients for Cloudflare services. Public APIs belong in Ard; small Go 
 
 - `d1.ard`: public D1 API
 - `r2.ard`: public R2 API
+- `email.ard`: public Email Sending API
 - `ffi/d1.go`: D1 `database/sql` adapter
 - `ffi/r2/`: R2 S3-compatible adapter
 - `ard.toml`: Ard package manifest
@@ -19,6 +20,7 @@ Ard-native clients for Cloudflare services. Public APIs belong in Ard; small Go 
 ard format --check .
 ard test
 go test ./...
+go vet ./...
 ```
 
 ## Guidelines

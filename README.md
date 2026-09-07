@@ -1,6 +1,6 @@
 # ard-cloudflare
 
-Ard-native clients for Cloudflare D1 and R2.
+Ard-native clients for Cloudflare D1, R2, and Email Sending.
 
 ## D1
 
@@ -70,6 +70,35 @@ let object = try r2::get_bytes(client, "assets", "avatars/ada.png", Int64::from(
 
 The initial API includes streaming uploads and downloads, bounded buffered downloads, metadata lookup, deletion, byte ranges, jurisdiction-specific endpoints, and cursor-based listing.
 
+## Email Sending
+
+Send structured text or HTML messages through Cloudflare Email Sending. Recipient groups, headers, and attachments are optional; at least one recipient and one body format are required.
+
+```ard
+use cloudflare/email
+
+let client = try email::connect(email::Config{
+  account_id: "0123456789abcdef0123456789abcdef",
+  api_token: "api-token",
+})
+
+let result = try email::send(
+  client,
+  email::Message{
+    from: email::Address{
+      email: "login@example.com",
+      name: "Maestro",
+    },
+    to: [email::Address{email: "ada@example.com"}],
+    subject: "Sign in to Maestro",
+    text: "Open the sign-in link.",
+    html: "<p>Open the sign-in link.</p>",
+  },
+)
+```
+
+`result` includes the Cloudflare message ID and the delivered, queued, permanently bounced, and suppressed recipient lists. Attachments accept bytes and are base64-encoded for the API.
+
 ## Development
 
 Validation:
@@ -78,4 +107,5 @@ Validation:
 ard format --check .
 ard test
 go test ./...
+go vet ./...
 ```

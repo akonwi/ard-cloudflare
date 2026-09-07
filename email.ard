@@ -1,0 +1,508 @@
+use ard/testing
+use ard/unsafe
+
+use go:bytes
+use go:encoding/hex
+use go:encoding/json
+use go:io
+use go:net/http
+use go:strings
+use go:time
+
+let API_BASE: Str = "https://api.cloudflare.com/client/v4"
+let MAX_RESPONSE_BYTES: Int64 = Int64::from(1024 * 1024)
+
+private fn error_message(error: Error) Str {
+  error.error()
+}
+
+struct Config {
+  account_id: Str,
+  api_token: Str,
+  request_timeout_ms: Int64?,
+}
+
+struct Client {
+  account_id: Str,
+  api_token: Str,
+  http_client: mut http::Client,
+}
+
+fn connect(config: Config) Client!Str {
+  let timeout_ms = try validate_config(config)
+  let http_client = mut http::Client{Timeout: time::Duration::from(timeout_ms) * time::Millisecond}
+  Result::ok(
+    Client{
+      account_id: strings::TrimSpace(config.account_id),
+      api_token: config.api_token,
+      http_client: http_client,
+    },
+  )
+}
+
+private fn validate_config(config: Config) Int64!Str {
+  let account_id = strings::TrimSpace(config.account_id)
+  if account_id.size() != 32 {
+    Result::err("cloudflare email: account ID must be 32 hexadecimal characters")
+  } else {
+    try hex::DecodeString(
+      account_id,
+    ).map_err(fn(_) Str {
+      "cloudflare email: account ID must be 32 hexadecimal characters"
+    })
+    validate_credentials_and_timeout(config)
+  }
+}
+
+private fn validate_credentials_and_timeout(config: Config) Int64!Str {
+  if strings::TrimSpace(config.api_token) == "" {
+    Result::err("cloudflare email: API token is required")
+  } else {
+    let timeout_ms = config.request_timeout_ms.or(Int64::from(30_000))
+    match timeout_ms <= Int64::from(0) or timeout_ms > Int64::from(86_400_000) {
+      true => Result::err("cloudflare email: request timeout must be between 1ms and 24h"),
+      false => Result::ok(timeout_ms),
+    }
+  }
+}
+
+struct Address {
+  #json(name: "address")
+  email: Str,
+  
+  #json(omit: none)
+  name: Str?,
+}
+
+enum Disposition {
+  attachment,
+  inline,
+}
+
+struct Attachment {
+  filename: Str,
+  content_type: Str,
+  content: [Byte],
+  disposition: Disposition,
+  content_id: Str?,
+}
+
+struct Message {
+  from: Address,
+  to: [Address]?,
+  cc: [Address]?,
+  bcc: [Address]?,
+  reply_to: Address?,
+  subject: Str,
+  text: Str?,
+  html: Str?,
+  headers: [Str: Str]?,
+  attachments: [Attachment]?,
+}
+
+struct SendResult {
+  message_id: Str,
+  delivered: [Str],
+  queued: [Str],
+  permanent_bounces: [Str],
+  suppressed_recipients: [Str],
+}
+
+private struct WireAttachment {
+  filename: Str,
+  
+  #json(name: "type")
+  content_type: Str,
+  
+  content: [Byte],
+  disposition: Str,
+  
+  #json(omit: none)
+  content_id: Str?,
+}
+
+private struct WireMessage {
+  from: Address,
+  
+  #json(omit: none)
+  to: [Address]?,
+  
+  #json(omit: none)
+  cc: [Address]?,
+  
+  #json(omit: none)
+  bcc: [Address]?,
+  
+  #json(omit: none)
+  reply_to: Address?,
+  
+  subject: Str,
+  
+  #json(omit: none)
+  text: Str?,
+  
+  #json(omit: none)
+  html: Str?,
+  
+  #json(omit: none)
+  headers: [Str: Str]?,
+  
+  #json(omit: none)
+  attachments: [WireAttachment]?,
+}
+
+private struct ApiMessage {
+  code: Float64,
+  message: Str,
+}
+
+private struct SendEnvelope {
+  success: Bool,
+  result: SendResult,
+  errors: [ApiMessage],
+  messages: [ApiMessage],
+}
+
+fn send(client: Client, message: Message) SendResult!Str {
+  try validate_message(message)
+  mut request = try send_request(client, message)
+  let response = try client.http_client.Do(request).map_err(error_message)
+  if unsafe::is_nil(response) {
+    Result::err("cloudflare email: nil HTTP response")
+  } else {
+    defer response.Body.Close()
+    let limited = io::LimitReader(response.Body, MAX_RESPONSE_BYTES + Int64::from(1))
+    mut response_bytes = try io::ReadAll(limited).map_err(error_message)
+    if Int64::from(response_bytes.size()) > MAX_RESPONSE_BYTES {
+      Result::err("cloudflare email: response exceeds {MAX_RESPONSE_BYTES} bytes")
+    } else {
+      decode_response(response.StatusCode, mut response_bytes)
+    }
+  }
+}
+
+private fn send_request(client: Client, message: Message) (mut http::Request)!Str {
+  mut body = try encode_message(message)
+  let endpoint = "{API_BASE}/accounts/{client.account_id}/email/sending/send"
+  let reader = bytes::NewReader(mut body)
+  mut request = try http::NewRequest("POST", endpoint, reader).map_err(error_message)
+  request.Header.Set("Authorization", "Bearer {client.api_token}")
+  request.Header.Set("Content-Type", "application/json")
+  Result::ok(request)
+}
+
+private fn validate_message(message: Message) Void!Str {
+  let to = message.to.or([])
+  let cc = message.cc.or([])
+  let bcc = message.bcc.or([])
+  if strings::TrimSpace(message.from.email) == "" {
+    Result::err("cloudflare email: sender address is required")
+  } else if to.size() + cc.size() + bcc.size() == 0 {
+    Result::err("cloudflare email: at least one recipient is required")
+  } else if strings::TrimSpace(message.subject) == "" {
+    Result::err("cloudflare email: subject is required")
+  } else if not has_body(message) {
+    Result::err("cloudflare email: text or HTML body is required")
+  } else {
+    for address in to {
+      try validate_recipient(address)
+    }
+    for address in cc {
+      try validate_recipient(address)
+    }
+    for address in bcc {
+      try validate_recipient(address)
+    }
+    match message.reply_to {
+      address => try validate_recipient(address),
+      _ => (),
+    }
+    for attachment in message.attachments.or([]) {
+      try validate_attachment(attachment)
+    }
+    Result::ok(())
+  }
+}
+
+private fn validate_recipient(address: Address) Void!Str {
+  match strings::TrimSpace(address.email) == "" {
+    true => Result::err("cloudflare email: recipient address is required"),
+    false => Result::ok(()),
+  }
+}
+
+private fn has_body(message: Message) Bool {
+  match message.text {
+    text => {
+      match text != "" {
+        true => true,
+        false => {
+          match message.html {
+            html => html != "",
+            _ => false,
+          }
+        },
+      }
+    },
+    _ => {
+      match message.html {
+        html => html != "",
+        _ => false,
+      }
+    },
+  }
+}
+
+private fn validate_attachment(attachment: Attachment) Void!Str {
+  if strings::TrimSpace(attachment.filename) == "" {
+    Result::err("cloudflare email: attachment filename is required")
+  } else if strings::TrimSpace(attachment.content_type) == "" {
+    Result::err("cloudflare email: attachment content type is required")
+  } else {
+    match attachment.disposition {
+      Disposition::inline => {
+        match attachment.content_id {
+          content_id => {
+            match strings::TrimSpace(content_id) != "" {
+              true => Result::ok(()),
+              false => Result::err("cloudflare email: inline attachment content ID is required"),
+            }
+          },
+          _ => Result::err("cloudflare email: inline attachment content ID is required"),
+        }
+      },
+      Disposition::attachment => Result::ok(()),
+    }
+  }
+}
+
+private fn encode_message(message: Message) [Byte]!Str {
+  let attachments = mut List::new<WireAttachment>()
+  for attachment in message.attachments.or([]) {
+    attachments.push(
+      WireAttachment{
+        filename: attachment.filename,
+        content_type: attachment.content_type,
+        content: attachment.content,
+        disposition: match attachment.disposition {
+          Disposition::attachment => "attachment",
+          Disposition::inline => "inline",
+        },
+        content_id: attachment.content_id,
+      },
+    )
+  }
+  let wire = WireMessage{
+    from: message.from,
+    to: message.to,
+    cc: message.cc,
+    bcc: message.bcc,
+    reply_to: message.reply_to,
+    subject: message.subject,
+    text: message.text,
+    html: message.html,
+    headers: message.headers,
+    attachments: present_list(attachments.@),
+  }
+  json::Marshal(wire).map_err(error_message)
+}
+
+private fn present_list(values: [$T]) [$T]? {
+  match values.size() {
+    0 => Maybe::new(),
+    _ => Maybe::new(values),
+  }
+}
+
+private fn decode_response(status: Int, body: mut [Byte]) SendResult!Str {
+  mut envelope = SendEnvelope{
+    success: false,
+    result: SendResult{
+      message_id: "",
+      delivered: [],
+      queued: [],
+      permanent_bounces: [],
+      suppressed_recipients: [],
+    },
+    errors: [],
+    messages: [],
+  }
+  match json::Unmarshal(mut body, mut envelope) {
+    ok => {
+      if status < 200 or status >= 300 or (not envelope.success) {
+        Result::err(api_error(status, envelope.errors))
+      } else {
+        Result::ok(envelope.result)
+      }
+    },
+    err(error) => {
+      match status >= 200 and status < 300 {
+        true => Result::err("cloudflare email: invalid response: {error.error()}"),
+        false => Result::err("cloudflare email: HTTP {status}"),
+      }
+    },
+  }
+}
+
+private fn api_error(status: Int, errors: [ApiMessage]) Str {
+  match errors.at(0) {
+    error => {
+      match error.message != "" {
+        true => "cloudflare email: {error.message}",
+        false => "cloudflare email: HTTP {status}",
+      }
+    },
+    _ => "cloudflare email: HTTP {status}",
+  }
+}
+
+test fn email_message_encoding_uses_cloudflare_wire_fields() Void!Str {
+  let message = Message{
+    from: Address{email: "sender@example.com", name: "Sender"},
+    to: [Address{email: "ada@example.com"}],
+    subject: "Hello",
+    text: "Hi Ada",
+    attachments: [
+      Attachment{
+        filename: "hello.txt",
+        content_type: "text/plain",
+        content: "hi".bytes(),
+        disposition: Disposition::attachment,
+      },
+    ],
+  }
+  let body = Str::from(try encode_message(message))
+  try testing::assert(
+    strings::Contains(body, "\"address\":\"sender@example.com\",\"name\":\"Sender\""),
+    "encodes named addresses",
+  )
+  try testing::assert(
+    strings::Contains(body, "\"address\":\"ada@example.com\""),
+    "encodes unnamed addresses",
+  )
+  try testing::assert(
+    strings::Contains(body, "\"type\":\"text/plain\""),
+    "renames the attachment content type",
+  )
+  try testing::assert(strings::Contains(body, "\"content\":\"aGk=\""), "base64 encodes attachment bytes")
+  try testing::assert(
+    strings::Contains(body, "\"disposition\":\"attachment\""),
+    "encodes attachment disposition",
+  )
+  testing::assert(not strings::Contains(body, "\"cc\""), "omits empty recipient groups")
+}
+
+test fn invalid_email_accounts_fail_before_connecting() Void!Str {
+  match connect(Config{account_id: "../other-account", api_token: "token"}) {
+    ok(_) => testing::fail("an invalid account ID should fail"),
+    err(message) => {
+      testing::assert(
+        message == "cloudflare email: account ID must be 32 hexadecimal characters",
+        "reports the invalid account ID",
+      )
+    },
+  }
+}
+
+test fn email_requires_a_recipient_and_body() Void!Str {
+  let no_recipient = Message{
+    from: Address{email: "sender@example.com"},
+    subject: "Hello",
+    text: "Body",
+  }
+  match validate_message(no_recipient) {
+    ok => try testing::fail("a message without recipients should fail"),
+    err(message) => {
+      try testing::assert(
+        message == "cloudflare email: at least one recipient is required",
+        "reports missing recipients",
+      )
+    },
+  }
+  
+  let no_body = Message{
+    from: Address{email: "sender@example.com"},
+    to: [Address{email: "ada@example.com"}],
+    subject: "Hello",
+  }
+  match validate_message(no_body) {
+    ok => testing::fail("a message without a body should fail"),
+    err(message) => {
+      testing::assert(
+        message == "cloudflare email: text or HTML body is required",
+        "reports the missing body",
+      )
+    },
+  }
+}
+
+test fn email_decodes_delivery_results() Void!Str {
+  mut body = try json::Marshal(
+    SendEnvelope{
+      success: true,
+      result: SendResult{
+        message_id: "message-1",
+        delivered: ["ada@example.com"],
+        queued: ["grace@example.com"],
+        permanent_bounces: [],
+        suppressed_recipients: [],
+      },
+      errors: [],
+      messages: [],
+    },
+  ).map_err(error_message)
+  let result = try decode_response(200, mut body)
+  try testing::assert(result.message_id == "message-1", "decodes the message ID")
+  try testing::assert(result.delivered.at(0).or("") == "ada@example.com", "decodes delivered recipients")
+  testing::assert(result.queued.at(0).or("") == "grace@example.com", "decodes queued recipients")
+}
+
+test fn email_reports_structured_api_errors() Void!Str {
+  mut body = try json::Marshal(
+    SendEnvelope{
+      success: false,
+      result: SendResult{
+        message_id: "",
+        delivered: [],
+        queued: [],
+        permanent_bounces: [],
+        suppressed_recipients: [],
+      },
+      errors: [ApiMessage{code: 10_200.0, message: "sender is not verified"}],
+      messages: [],
+    },
+  ).map_err(error_message)
+  match decode_response(400, mut body) {
+    ok(_) => testing::fail("an unsuccessful envelope should fail"),
+    err(message) => {
+      testing::assert(
+        message == "cloudflare email: sender is not verified",
+        "returns Cloudflare's structured error",
+      )
+    },
+  }
+}
+
+test fn email_requests_use_bearer_authentication() Void!Str {
+  let account_id = "0123456789abcdef0123456789abcdef"
+  let client = try connect(Config{account_id: account_id, api_token: "test-token"})
+  let request = try send_request(
+    client,
+    Message{
+      from: Address{email: "sender@example.com"},
+      to: [Address{email: "ada@example.com"}],
+      subject: "Hello",
+      text: "Body",
+    },
+  )
+  try testing::assert(request.Method == "POST", "uses POST")
+  try testing::assert(
+    request.URL.String() == "https://api.cloudflare.com/client/v4/accounts/{account_id}/email/sending/send",
+    "uses the email sending endpoint",
+  )
+  try testing::assert(
+    request.Header.Get("Authorization") == "Bearer test-token",
+    "uses bearer authentication",
+  )
+  testing::assert(request.Header.Get("Content-Type") == "application/json", "uses JSON")
+}
