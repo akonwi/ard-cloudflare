@@ -23,20 +23,11 @@ fn users() [Any]!Str {
 }
 ```
 
-Keep credentials outside source control in real applications.
-
 ### Transactions
 
 D1's HTTP API does not provide connection-scoped transactions. Calling `db.begin()` returns an unsupported-operation error rather than pretending to provide normal transaction semantics. A future D1-native batch API will expose D1's atomic batch operation explicitly.
 
-## Local development
-
-This checkout currently uses the neighboring ard-sql checkout:
-
-```toml
-[dependencies]
-sql = { path = "../sql" }
-```
+## Development
 
 Validation:
 

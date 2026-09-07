@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "root": "root",
+  "packages": [
+    {
+      "id": "git:795eb0d192b4efcf:35560bbcb25bbb2db7b41c94bc7b109338e6d687",
+      "name": "sql",
+      "git": "https://github.com/akonwi/ard-sql.git",
+      "commit": "35560bbcb25bbb2db7b41c94bc7b109338e6d687",
+      "requested": "35560bbcb25bbb2db7b41c94bc7b109338e6d687",
+      "integrity": "sha256:75bc7c03b7f0b19de4ac5df0d8d11f5118e07cc7f431d99ca780ae83eb62c1b2",
+      "dependencies": {
+        "decode": "git:c5125d0dd6cd13cc:c590f42ec43c5d362844925a8a978d64a1846c5c"
+      }
+    },
+    {
+      "id": "git:c5125d0dd6cd13cc:c590f42ec43c5d362844925a8a978d64a1846c5c",
+      "name": "decode",
+      "git": "https://github.com/akonwi/ard-decode.git",
+      "commit": "c590f42ec43c5d362844925a8a978d64a1846c5c",
+      "requested": "c590f42ec43c5d362844925a8a978d64a1846c5c",
+      "integrity": "sha256:34ecc89cd4acaf0dc056d26f00ec7e570b294708e267f3b4042ab0f2d09fbbc1"
+    },
+    {
+      "id": "root",
+      "name": "cloudflare",
+      "path": ".",
+      "dependencies": {
+        "sql": "git:795eb0d192b4efcf:35560bbcb25bbb2db7b41c94bc7b109338e6d687"
+      }
+    }
+  ]
+}
