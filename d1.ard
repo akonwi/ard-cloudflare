@@ -1,3 +1,5 @@
+use ard/testing
+
 use go:github.com/akonwi/ard-cloudflare/ffi
 use sql
 
@@ -22,4 +24,25 @@ fn open(config: Config) sql::Database!Str {
     Result::err(err.error())
   }
   sql::from_handle(handle, sql::Driver::d1)
+}
+
+test fn open_validates_configuration_before_connecting() Void!Str {
+  match open(
+    Config{
+      account_id: "",
+      database_id: "database",
+      api_token: "token",
+    },
+  ) {
+    ok(database) => {
+      database.close()
+      testing::fail("an empty account ID should fail")
+    },
+    err(message) => {
+      testing::assert(
+        message == "cloudflare d1: account ID is required",
+        "reports the invalid account ID",
+      )
+    },
+  }
 }

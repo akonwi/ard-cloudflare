@@ -23,5 +23,6 @@ go test ./...
 
 - Keep Cloudflare credentials out of logs and errors.
 - Use tests before changing request, response, or SQL-driver behavior.
+- Co-locate unit tests with their subject in the source file. Use separate test files only for more complicated or integration tests.
 - Preserve D1-specific semantics instead of imitating unsupported `database/sql` behavior. In particular, do not emulate connection-scoped transactions; expose atomic batches explicitly.
 - Bound HTTP response reads and honor request contexts.
