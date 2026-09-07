@@ -10,6 +10,29 @@ struct Config {
   api_token: Str,
 }
 
+// One statement in an atomic D1 batch. Parameters use positional ? placeholders.
+struct Statement {
+  sql: Str,
+  params: [Any],
+}
+
+fn statement(sql: Str, params: [Any]?) Statement {
+  Statement{sql: sql, params: params.or([])}
+}
+
+struct BatchResult {
+  rows: [Any],
+  meta: Meta,
+}
+
+struct Meta {
+  changes: Int,
+  last_row_id: Int,
+  rows_read: Int,
+  rows_written: Int,
+  duration: Float64,
+}
+
 // Opens a D1 database through Go's database/sql interface.
 //
 // The returned database uses the same named-parameter query API as ard-sql:
@@ -24,6 +47,40 @@ fn open(config: Config) sql::Database!Str {
     Result::err(err.error())
   }
   sql::from_handle(handle, sql::Driver::d1)
+}
+
+// Executes statements atomically using D1's native batch operation.
+fn batch(database: sql::Database, statements: [Statement]) [BatchResult]!Str {
+  let queries = mut List::new<Str>()
+  let params = mut List::new<[Any]>()
+  for statement in statements {
+    queries.push(statement.sql)
+    params.push(statement.params)
+  }
+  
+  let wire_results = try ffi::Batch(database.handle, mut queries.@, mut params.@) -> err { Result::err(err.error()) }
+  let results = mut List::new<BatchResult>()
+  for result in wire_results {
+    results.push(
+      BatchResult{
+        rows: result.Rows,
+        meta: Meta{
+          changes: result.Meta.Changes,
+          last_row_id: result.Meta.LastRowID,
+          rows_read: result.Meta.RowsRead,
+          rows_written: result.Meta.RowsWritten,
+          duration: result.Meta.Duration,
+        },
+      },
+    )
+  }
+  Result::ok(results.@)
+}
+
+test fn statement_defaults_to_no_parameters() Void!Str {
+  let value = statement("SELECT 1")
+  try testing::assert(value.sql == "SELECT 1", "preserves SQL")
+  testing::assert(value.params.size() == 0, "defaults parameters to an empty list")
 }
 
 test fn open_validates_configuration_before_connecting() Void!Str {

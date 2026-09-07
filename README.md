@@ -23,9 +23,26 @@ fn users() [Any]!Str {
 }
 ```
 
-### Transactions
+### Atomic batches
 
-D1's HTTP API does not provide connection-scoped transactions. Calling `db.begin()` returns an unsupported-operation error rather than pretending to provide normal transaction semantics. A future D1-native batch API will expose D1's atomic batch operation explicitly.
+Use `d1::batch` when several statements must execute atomically. Batch statements use positional `?` parameters and results correspond to statements by index:
+
+```ard
+let results = try d1::batch(db, [
+  d1::statement(
+    "INSERT INTO users (id, name) VALUES (?, ?)",
+    [1, "Ada"],
+  ),
+  d1::statement(
+    "SELECT id, name FROM users WHERE id = ?",
+    [1],
+  ),
+])
+
+let selected_rows = results.at(1).expect("select result").rows
+```
+
+D1's HTTP API does not provide connection-scoped transactions. Calling `db.begin()` returns an unsupported-operation error rather than pretending to provide normal transaction semantics.
 
 ## Development
 

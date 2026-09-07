@@ -157,6 +157,137 @@ func TestIntegerResultsPreserveValuesAboveFloatPrecision(t *testing.T) {
 	}
 }
 
+func TestBatchUsesOneAtomicRequestAndReturnsEveryResult(t *testing.T) {
+	var got batchRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(`{
+			"success": true,
+			"errors": [],
+			"result": [
+				{
+					"success": true,
+					"results": {"columns": [], "rows": []},
+					"meta": {"changes": 1, "last_row_id": 7, "rows_read": 0, "rows_written": 1, "duration": 0.2}
+				},
+				{
+					"success": true,
+					"results": {"columns": ["id", "name"], "rows": [[7, "Ada"]]},
+					"meta": {"changes": 0, "last_row_id": 0, "rows_read": 1, "rows_written": 0, "duration": 0.1}
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	db := openTestDB(t, server)
+	defer db.Close()
+	results, err := Batch(
+		db,
+		[]string{"INSERT INTO users VALUES (?, ?)", "SELECT id, name FROM users"},
+		[][]any{{7, "Ada"}, {}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Batch) != 2 || got.Batch[0].SQL != "INSERT INTO users VALUES (?, ?)" {
+		t.Fatalf("request = %#v", got)
+	}
+	if len(results) != 2 || results[0].Meta.Changes != 1 || results[0].Meta.LastRowID != 7 {
+		t.Fatalf("results = %#v", results)
+	}
+	wantRows := []any{map[string]any{"id": 7, "name": "Ada"}}
+	if !reflect.DeepEqual(results[1].Rows, wantRows) {
+		t.Fatalf("rows = %#v", results[1].Rows)
+	}
+}
+
+func TestBatchRejectsMultipleSQLStatementsBeforeSending(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("multiple SQL statements should not make a request")
+	}))
+	defer server.Close()
+	db := openTestDB(t, server)
+	defer db.Close()
+
+	_, err := Batch(db, []string{"INSERT INTO users VALUES (1); DELETE FROM users"}, [][]any{{}})
+	if err == nil || !strings.Contains(err.Error(), "exactly one SQL statement") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestBatchAllowsSemicolonsInStringsAndComments(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`{
+			"success": true,
+			"errors": [],
+			"result": [{"success": true, "results": {"columns": [], "rows": []}, "meta": {}}]
+		}`))
+	}))
+	defer server.Close()
+	db := openTestDB(t, server)
+	defer db.Close()
+
+	_, err := Batch(db, []string{"SELECT ';' AS value /* ; */; -- trailing"}, [][]any{{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d", requests)
+	}
+}
+
+type Maybe[T any] struct {
+	value T
+	none  bool
+}
+
+func (m Maybe[T]) IsNone() bool { return m.none }
+func (m Maybe[T]) Value() T     { return m.value }
+
+func TestBatchUnwrapsMaybeParameters(t *testing.T) {
+	none, err := requestValue(Maybe[string]{none: true})
+	if err != nil || none != nil {
+		t.Fatalf("none = %#v, error %v", none, err)
+	}
+	some, err := requestValue(Maybe[string]{value: "Ada"})
+	if err != nil || some != "Ada" {
+		t.Fatalf("some = %#v, error %v", some, err)
+	}
+}
+
+func TestBatchRejectsUnsupportedParameterBeforeSending(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("unsupported parameters should not make a request")
+	}))
+	defer server.Close()
+	db := openTestDB(t, server)
+	defer db.Close()
+
+	_, err := Batch(db, []string{"SELECT ?"}, [][]any{{map[string]any{"secret": "value"}}})
+	if err == nil || !strings.Contains(err.Error(), "unsupported parameter type") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestBatchRejectsEmptyInput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("empty batch should not make a request")
+	}))
+	defer server.Close()
+	db := openTestDB(t, server)
+	defer db.Close()
+
+	_, err := Batch(db, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "at least one statement") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestBeginReportsUnsupportedTransactions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer server.Close()
