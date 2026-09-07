@@ -1,0 +1,24 @@
+use ard/testing
+
+use cloudflare/d1
+
+test fn open_validates_configuration_before_connecting() Void!Str {
+  match d1::open(
+    d1::Config{
+      account_id: "",
+      database_id: "database",
+      api_token: "token",
+    },
+  ) {
+    ok(database) => {
+      database.close()
+      testing::fail("an empty account ID should fail")
+    },
+    err(message) => {
+      testing::assert(
+        message == "cloudflare d1: account ID is required",
+        "reports the invalid account ID",
+      )
+    },
+  }
+}

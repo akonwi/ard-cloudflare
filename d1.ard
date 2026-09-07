@@ -1,0 +1,25 @@
+use go:github.com/akonwi/ard-cloudflare/ffi
+use sql
+
+// Credentials identifying one Cloudflare D1 database.
+struct Config {
+  account_id: Str,
+  database_id: Str,
+  api_token: Str,
+}
+
+// Opens a D1 database through Go's database/sql interface.
+//
+// The returned database uses the same named-parameter query API as ard-sql:
+//
+//   db.query("SELECT * FROM users WHERE id = @id").first(["id": 42])
+//
+// D1's HTTP API does not expose connection-scoped transactions, so begin()
+// returns an unsupported-operation error. A native atomic batch API will be
+// exposed separately.
+fn open(config: Config) sql::Database!Str {
+  let handle = try ffi::Open(config.account_id, config.database_id, config.api_token) -> err {
+    Result::err(err.error())
+  }
+  sql::from_handle(handle, sql::Driver::d1)
+}
