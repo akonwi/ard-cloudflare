@@ -69,7 +69,7 @@ private fn validate_credentials_and_timeout(config: Config) Int64!Str {
 struct Address {
   #json(name: "address")
   email: Str,
-  
+
   #json(omit: none)
   name: Str?,
 }
@@ -110,43 +110,43 @@ struct SendResult {
 
 private struct WireAttachment {
   filename: Str,
-  
+
   #json(name: "type")
   content_type: Str,
-  
+
   content: [Byte],
   disposition: Str,
-  
+
   #json(omit: none)
   content_id: Str?,
 }
 
 private struct WireMessage {
   from: Address,
-  
+
   #json(omit: none)
   to: [Address]?,
-  
+
   #json(omit: none)
   cc: [Address]?,
-  
+
   #json(omit: none)
   bcc: [Address]?,
-  
+
   #json(omit: none)
   reply_to: Address?,
-  
+
   subject: Str,
-  
+
   #json(omit: none)
   text: Str?,
-  
+
   #json(omit: none)
   html: Str?,
-  
+
   #json(omit: none)
   headers: [Str: Str]?,
-  
+
   #json(omit: none)
   attachments: [WireAttachment]?,
 }
@@ -163,20 +163,22 @@ private struct SendEnvelope {
   messages: [ApiMessage],
 }
 
-fn send(client: Client, message: Message) SendResult!Str {
-  try validate_message(message)
-  mut request = try send_request(client, message)
-  let response = try client.http_client.Do(request).map_err(error_message)
-  if unsafe::is_nil(response) {
-    Result::err("cloudflare email: nil HTTP response")
-  } else {
-    defer response.Body.Close()
-    let limited = io::LimitReader(response.Body, MAX_RESPONSE_BYTES + Int64::from(1))
-    mut response_bytes = try io::ReadAll(limited).map_err(error_message)
-    if Int64::from(response_bytes.size()) > MAX_RESPONSE_BYTES {
-      Result::err("cloudflare email: response exceeds {MAX_RESPONSE_BYTES} bytes")
+impl Client {
+  fn send(message: Message) SendResult!Str {
+    try validate_message(message)
+    mut request = try send_request(self, message)
+    let response = try self.http_client.Do(request).map_err(error_message)
+    if unsafe::is_nil(response) {
+      Result::err("cloudflare email: nil HTTP response")
     } else {
-      decode_response(response.StatusCode, mut response_bytes)
+      defer response.Body.Close()
+      let limited = io::LimitReader(response.Body, MAX_RESPONSE_BYTES + Int64::from(1))
+      mut response_bytes = try io::ReadAll(limited).map_err(error_message)
+      if Int64::from(response_bytes.size()) > MAX_RESPONSE_BYTES {
+        Result::err("cloudflare email: response exceeds {MAX_RESPONSE_BYTES} bytes")
+      } else {
+        decode_response(response.StatusCode, mut response_bytes)
+      }
     }
   }
 }
@@ -419,7 +421,7 @@ test fn email_requires_a_recipient_and_body() Void!Str {
       )
     },
   }
-  
+
   let no_body = Message{
     from: Address{email: "sender@example.com"},
     to: [Address{email: "ada@example.com"}],
