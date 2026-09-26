@@ -1,4 +1,4 @@
-ard = ">= 0.40.0"
+ard = ">= 0.42.0"
 name = "cloudflare"
 
 [dependencies]

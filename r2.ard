@@ -317,7 +317,7 @@ fn list(client: Client, bucket: Str, options: ListOptions?) ListPage!Str {
     _ => (),
   }
   match value.limit {
-    limit => { input.MaxKeys = aws::Int32(Int32::from(limit)) },
+    limit => { input.MaxKeys = aws::Int32(Int32::fit(limit)) },
     _ => (),
   }
   let output = try client.handle.ListObjectsV2(context::Background(), input).map_err(error_message)
