@@ -82,8 +82,7 @@ let client = try email::connect(email::Config{
   api_token: "api-token",
 })
 
-let result = try email::send(
-  client,
+let result = try client.send(
   email::Message{
     from: email::Address{
       email: "login@example.com",
