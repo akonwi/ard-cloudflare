@@ -57,7 +57,7 @@ fn batch(database: sql::Database, statements: [Statement]) [BatchResult]!Str {
     queries.push(statement.sql)
     params.push(statement.params)
   }
-  
+
   let wire_results = try ffi::Batch(database.handle, mut queries.@, mut params.@) -> err { Result::err(err.error()) }
   let results = mut List::new<BatchResult>()
   for result in wire_results {
