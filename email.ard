@@ -25,12 +25,12 @@ struct Config {
 struct Client {
   account_id: Str,
   api_token: Str,
-  http_client: mut http::Client,
+  http_client: &mut http::Client,
 }
 
 fn connect(config: Config) Client!Str {
   let timeout_ms = try validate_config(config)
-  let http_client = mut http::Client{Timeout: time::Duration::from(timeout_ms) * time::Millisecond}
+  let http_client = &mut http::Client{Timeout: time::Duration::from(timeout_ms) * time::Millisecond}
   Result::ok(
     Client{
       account_id: strings::TrimSpace(config.account_id),
@@ -177,16 +177,16 @@ impl Client {
       if Int64::from(response_bytes.size()) > MAX_RESPONSE_BYTES {
         Result::err("cloudflare email: response exceeds {MAX_RESPONSE_BYTES} bytes")
       } else {
-        decode_response(response.StatusCode, mut response_bytes)
+        decode_response(response.StatusCode, &mut response_bytes)
       }
     }
   }
 }
 
-private fn send_request(client: Client, message: Message) (mut http::Request)!Str {
+private fn send_request(client: Client, message: Message) (&mut http::Request)!Str {
   mut body = try encode_message(message)
   let endpoint = "{API_BASE}/accounts/{client.account_id}/email/sending/send"
-  let reader = bytes::NewReader(mut body)
+  let reader = bytes::NewReader(&mut body)
   mut request = try http::NewRequest("POST", endpoint, reader).map_err(error_message)
   request.Header.Set("Authorization", "Bearer {client.api_token}")
   request.Header.Set("Content-Type", "application/json")
@@ -279,7 +279,7 @@ private fn validate_attachment(attachment: Attachment) Void!Str {
 }
 
 private fn encode_message(message: Message) [Byte]!Str {
-  let attachments = mut List::new<WireAttachment>()
+  let attachments = &mut List::new<WireAttachment>()
   for attachment in message.attachments.or([]) {
     attachments.push(
       WireAttachment{
@@ -304,7 +304,7 @@ private fn encode_message(message: Message) [Byte]!Str {
     text: message.text,
     html: message.html,
     headers: message.headers,
-    attachments: present_list(attachments.@),
+    attachments: present_list(attachments.*),
   }
   json::Marshal(wire).map_err(error_message)
 }
@@ -316,7 +316,7 @@ private fn present_list(values: [$T]) [$T]? {
   }
 }
 
-private fn decode_response(status: Int, body: mut [Byte]) SendResult!Str {
+private fn decode_response(status: Int, body: &mut [Byte]) SendResult!Str {
   mut envelope = SendEnvelope{
     success: false,
     result: SendResult{
@@ -329,7 +329,7 @@ private fn decode_response(status: Int, body: mut [Byte]) SendResult!Str {
     errors: [],
     messages: [],
   }
-  match json::Unmarshal(mut body, mut envelope) {
+  match json::Unmarshal(body, &mut envelope) {
     ok => {
       if status < 200 or status >= 300 or (not envelope.success) {
         Result::err(api_error(status, envelope.errors))
@@ -453,7 +453,7 @@ test fn email_decodes_delivery_results() Void!Str {
       messages: [],
     },
   ).map_err(error_message)
-  let result = try decode_response(200, mut body)
+  let result = try decode_response(200, &mut body)
   try testing::assert(result.message_id == "message-1", "decodes the message ID")
   try testing::assert(result.delivered.at(0).or("") == "ada@example.com", "decodes delivered recipients")
   testing::assert(result.queued.at(0).or("") == "grace@example.com", "decodes queued recipients")
@@ -474,7 +474,7 @@ test fn email_reports_structured_api_errors() Void!Str {
       messages: [],
     },
   ).map_err(error_message)
-  match decode_response(400, mut body) {
+  match decode_response(400, &mut body) {
     ok(_) => testing::fail("an unsuccessful envelope should fail"),
     err(message) => {
       testing::assert(

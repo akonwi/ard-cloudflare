@@ -51,15 +51,15 @@ fn open(config: Config) sql::Database!Str {
 
 // Executes statements atomically using D1's native batch operation.
 fn batch(database: sql::Database, statements: [Statement]) [BatchResult]!Str {
-  let queries = mut List::new<Str>()
-  let params = mut List::new<[Any]>()
+  let queries = &mut List::new<Str>()
+  let params = &mut List::new<[Any]>()
   for statement in statements {
     queries.push(statement.sql)
     params.push(statement.params)
   }
 
-  let wire_results = try ffi::Batch(database.handle, mut queries.@, mut params.@) -> err { Result::err(err.error()) }
-  let results = mut List::new<BatchResult>()
+  let wire_results = try ffi::Batch(database.handle, queries.*, params.*) -> err { Result::err(err.error()) }
+  let results = &mut List::new<BatchResult>()
   for result in wire_results {
     results.push(
       BatchResult{
@@ -74,7 +74,7 @@ fn batch(database: sql::Database, statements: [Statement]) [BatchResult]!Str {
       },
     )
   }
-  Result::ok(results.@)
+  Result::ok(results.*)
 }
 
 test fn statement_defaults_to_no_parameters() Void!Str {

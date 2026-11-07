@@ -49,12 +49,12 @@ struct Config {
 }
 
 struct Client {
-  handle: mut s3::Client,
+  handle: &mut s3::Client,
 }
 
 fn connect(config: Config) Client!Str {
   let timeout_ms = try validate_config(config)
-  let http_client = mut http::Client{Timeout: time::Duration::from(timeout_ms) * time::Millisecond}
+  let http_client = &mut http::Client{Timeout: time::Duration::from(timeout_ms) * time::Millisecond}
   let aws_config = try awsconfig::LoadDefaultConfig(
     context::Background(),
     awsconfig::WithRegion("auto"),
@@ -66,7 +66,7 @@ fn connect(config: Config) Client!Str {
     awsconfig::WithResponseChecksumValidation(aws::ResponseChecksumValidationWhenRequired),
   ).map_err(error_message)
   let endpoint = endpoint(config.account_id, config.jurisdiction.or(Jurisdiction::global))
-  let handle = s3::NewFromConfig(aws_config, fn(options: mut s3::Options) {
+  let handle = s3::NewFromConfig(aws_config, fn(options: &mut s3::Options) {
     options.BaseEndpoint = aws::String(endpoint)
   })
   Result::ok(Client{handle: handle})
@@ -173,7 +173,7 @@ struct ListPage {
 fn put(client: Client, bucket: Str, key: Str, body: io::Reader, options: PutOptions?) PutResult!Str {
   try validate_object(bucket, key)
   let value = options.or(PutOptions{})
-  let input = mut s3::PutObjectInput{
+  let input = &mut s3::PutObjectInput{
     Bucket: aws::String(bucket),
     Key: aws::String(key),
     Body: body,
@@ -214,7 +214,7 @@ fn put(client: Client, bucket: Str, key: Str, body: io::Reader, options: PutOpti
 }
 
 fn put_bytes(client: Client, bucket: Str, key: Str, body: [Byte], options: PutOptions?) PutResult!Str {
-  let reader = bytes::NewReader(mut body)
+  let reader = bytes::NewReader(body)
   put(client, bucket, key, reader, options)
 }
 
@@ -256,9 +256,9 @@ fn get_bytes(client: Client, bucket: Str, key: Str, max_bytes: Int64, options: G
   }
 }
 
-private fn get(client: Client, bucket: Str, key: Str, options: GetOptions?) Maybe<mut s3::GetObjectOutput>!Str {
+private fn get(client: Client, bucket: Str, key: Str, options: GetOptions?) Maybe<&mut s3::GetObjectOutput>!Str {
   try validate_object(bucket, key)
-  let input = mut s3::GetObjectInput{Bucket: aws::String(bucket), Key: aws::String(key)}
+  let input = &mut s3::GetObjectInput{Bucket: aws::String(bucket), Key: aws::String(key)}
   match options.or(GetOptions{}).range {
     range => { input.Range = aws::String(range_header(range)) },
     _ => (),
@@ -276,7 +276,7 @@ private fn get(client: Client, bucket: Str, key: Str, options: GetOptions?) Mayb
 
 fn head(client: Client, bucket: Str, key: Str) ObjectInfo?!Str {
   try validate_object(bucket, key)
-  let input = mut s3::HeadObjectInput{Bucket: aws::String(bucket), Key: aws::String(key)}
+  let input = &mut s3::HeadObjectInput{Bucket: aws::String(bucket), Key: aws::String(key)}
   match client.handle.HeadObject(context::Background(), input) {
     ok(output) => Result::ok(Maybe::new(info_from_head(key, output))),
     err(error) => {
@@ -290,7 +290,7 @@ fn head(client: Client, bucket: Str, key: Str) ObjectInfo?!Str {
 
 fn delete(client: Client, bucket: Str, key: Str) Void!Str {
   try validate_object(bucket, key)
-  let input = mut s3::DeleteObjectInput{Bucket: aws::String(bucket), Key: aws::String(key)}
+  let input = &mut s3::DeleteObjectInput{Bucket: aws::String(bucket), Key: aws::String(key)}
   client.handle.DeleteObject(
     context::Background(),
     input,
@@ -303,7 +303,7 @@ fn list(client: Client, bucket: Str, options: ListOptions?) ListPage!Str {
   try validate_bucket(bucket)
   let value = options.or(ListOptions{})
   try validate_list_options(value)
-  let input = mut s3::ListObjectsV2Input{Bucket: aws::String(bucket)}
+  let input = &mut s3::ListObjectsV2Input{Bucket: aws::String(bucket)}
   match value.prefix {
     prefix => { input.Prefix = aws::String(prefix) },
     _ => (),
@@ -321,11 +321,11 @@ fn list(client: Client, bucket: Str, options: ListOptions?) ListPage!Str {
     _ => (),
   }
   let output = try client.handle.ListObjectsV2(context::Background(), input).map_err(error_message)
-  let objects = mut List::new<ObjectInfo>()
+  let objects = &mut List::new<ObjectInfo>()
   for object in output.Contents {
     objects.push(info_from_list(object))
   }
-  let prefixes = mut List::new<Str>()
+  let prefixes = &mut List::new<Str>()
   for prefix in output.CommonPrefixes {
     match pointer_str(prefix.Prefix) {
       value => prefixes.push(value),
@@ -334,8 +334,8 @@ fn list(client: Client, bucket: Str, options: ListOptions?) ListPage!Str {
   }
   Result::ok(
     ListPage{
-      objects: objects.@,
-      common_prefixes: prefixes.@,
+      objects: objects.*,
+      common_prefixes: prefixes.*,
       cursor: match pointer_bool(output.IsTruncated) {
         true => pointer_str(output.NextContinuationToken),
         false => Maybe::new(),
@@ -385,28 +385,28 @@ private fn range_header(range: ByteRange) Str {
   }
 }
 
-private fn pointer_str(value: mut Str) Str? {
+private fn pointer_str(value: &mut Str) Str? {
   match unsafe::is_nil(value) {
     true => Maybe::new(),
-    false => Maybe::new(value.@),
+    false => Maybe::new(value.*),
   }
 }
 
-private fn pointer_int64(value: mut Int64) Int64 {
+private fn pointer_int64(value: &mut Int64) Int64 {
   match unsafe::is_nil(value) {
     true => Int64::from(0),
-    false => value.@,
+    false => value.*,
   }
 }
 
-private fn pointer_bool(value: mut Bool) Bool {
+private fn pointer_bool(value: &mut Bool) Bool {
   match unsafe::is_nil(value) {
     true => false,
-    false => value.@,
+    false => value.*,
   }
 }
 
-private fn pointer_time(value: mut time::Time) Str? {
+private fn pointer_time(value: &mut time::Time) Str? {
   match unsafe::is_nil(value) {
     true => Maybe::new(),
     false => Maybe::new(value.Format(time::RFC3339Nano)),
@@ -425,7 +425,7 @@ private fn storage_class(value: Str) StorageClass? {
   }
 }
 
-private fn object_size(content_length: mut Int64, content_range: mut Str) Int64 {
+private fn object_size(content_length: &mut Int64, content_range: &mut Str) Int64 {
   match pointer_str(content_range) {
     range => {
       let parts = strings::Split(range, "/")
@@ -450,7 +450,7 @@ private fn metadata(value: [Str: Str]) [Str: Str] {
   }
 }
 
-private fn info_from_get(key: Str, output: mut s3::GetObjectOutput) ObjectInfo {
+private fn info_from_get(key: Str, output: &mut s3::GetObjectOutput) ObjectInfo {
   ObjectInfo{
     key: key,
     size: object_size(output.ContentLength, output.ContentRange),
@@ -465,7 +465,7 @@ private fn info_from_get(key: Str, output: mut s3::GetObjectOutput) ObjectInfo {
   }
 }
 
-private fn info_from_head(key: Str, output: mut s3::HeadObjectOutput) ObjectInfo {
+private fn info_from_head(key: Str, output: &mut s3::HeadObjectOutput) ObjectInfo {
   ObjectInfo{
     key: key,
     size: pointer_int64(output.ContentLength),
