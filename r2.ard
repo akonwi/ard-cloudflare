@@ -220,16 +220,12 @@ fn put_bytes(client: Client, bucket: Str, key: Str, body: [Byte], options: PutOp
 
 fn download(client: Client, bucket: Str, key: Str, destination: io::Writer, options: GetOptions?) ObjectInfo?!Str {
   match get(client, bucket, key, options) {
-    ok(object) => {
-      match object {
-        object => {
-          defer object.Body.Close()
-          let _ = try io::Copy(destination, object.Body).map_err(error_message)
-          Result::ok(Maybe::new(info_from_get(key, object)))
-        },
-        _ => Result::ok(Maybe::new()),
-      }
+    ok(some(object)) => {
+      defer object.Body.Close()
+      let _ = try io::Copy(destination, object.Body).map_err(error_message)
+      Result::ok(Maybe::new(info_from_get(key, object)))
     },
+    ok(none) => Result::ok(Maybe::new()),
     err(error) => Result::err(error),
   }
 }
@@ -237,21 +233,17 @@ fn download(client: Client, bucket: Str, key: Str, destination: io::Writer, opti
 fn get_bytes(client: Client, bucket: Str, key: Str, max_bytes: Int64, options: GetOptions?) BufferedObject?!Str {
   try validate_max_bytes(max_bytes)
   match get(client, bucket, key, options) {
-    ok(found) => {
-      match found {
-        object => {
-          defer object.Body.Close()
-          let limited = io::LimitReader(object.Body, max_bytes + Int64::from(1))
-          mut body = try io::ReadAll(limited).map_err(error_message)
-          if Int64::from(body.size()) > max_bytes {
-            Result::err("cloudflare r2: object {bucket}/{key} exceeds {max_bytes} bytes")
-          } else {
-            Result::ok(Maybe::new(BufferedObject{info: info_from_get(key, object), body: body}))
-          }
-        },
-        _ => Result::ok(Maybe::new()),
+    ok(some(object)) => {
+      defer object.Body.Close()
+      let limited = io::LimitReader(object.Body, max_bytes + Int64::from(1))
+      mut body = try io::ReadAll(limited).map_err(error_message)
+      if Int64::from(body.size()) > max_bytes {
+        Result::err("cloudflare r2: object {bucket}/{key} exceeds {max_bytes} bytes")
+      } else {
+        Result::ok(Maybe::new(BufferedObject{info: info_from_get(key, object), body: body}))
       }
     },
+    ok(none) => Result::ok(Maybe::new()),
     err(error) => Result::err(error),
   }
 }
