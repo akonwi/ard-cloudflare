@@ -1,5 +1,5 @@
-ard = ">= 0.45.0"
+ard = ">= 0.48.0"
 name = "cloudflare"
 
 [dependencies]
-sql = { git = "https://github.com/akonwi/ard-sql.git", commit = "1ec8e5babec7f0ad83ca52fadc62d82627562ab5" }
+sql = { git = "https://github.com/akonwi/ard-sql.git", commit = "f5bc03a9fe90714b44eb4e5cc4999f9361c01351" }
