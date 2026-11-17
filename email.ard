@@ -234,24 +234,9 @@ private fn validate_recipient(address: Address) Void!Str {
 }
 
 private fn has_body(message: Message) Bool {
-  match message.text {
-    text => {
-      match text != "" {
-        true => true,
-        false => {
-          match message.html {
-            html => html != "",
-            _ => false,
-          }
-        },
-      }
-    },
-    _ => {
-      match message.html {
-        html => html != "",
-        _ => false,
-      }
-    },
+  match (message.text.or(""), message.html.or("")) {
+    ("", "") => false,
+    _ => true,
   }
 }
 
@@ -261,19 +246,11 @@ private fn validate_attachment(attachment: Attachment) Void!Str {
   } else if strings::TrimSpace(attachment.content_type) == "" {
     Result::err("cloudflare email: attachment content type is required")
   } else {
-    match attachment.disposition {
-      Disposition::inline => {
-        match attachment.content_id {
-          content_id => {
-            match strings::TrimSpace(content_id) != "" {
-              true => Result::ok(()),
-              false => Result::err("cloudflare email: inline attachment content ID is required"),
-            }
-          },
-          _ => Result::err("cloudflare email: inline attachment content ID is required"),
-        }
+    match (attachment.disposition, strings::TrimSpace(attachment.content_id.or(""))) {
+      (Disposition::inline, "") => {
+        Result::err("cloudflare email: inline attachment content ID is required")
       },
-      Disposition::attachment => Result::ok(()),
+      _ => Result::ok(()),
     }
   }
 }
@@ -507,4 +484,84 @@ test fn email_requests_use_bearer_authentication() Void!Str {
     "uses bearer authentication",
   )
   testing::assert(request.Header.Get("Content-Type") == "application/json", "uses JSON")
+}
+
+test fn email_body_accepts_text_or_html() Void!Str {
+  let base = Message{from: Address{email: "sender@example.com"}, subject: "Hello"}
+  try testing::assert(not has_body(base), "no text or HTML is not a body")
+  try testing::assert(
+    not has_body(
+      Message{
+        from: base.from,
+        subject: base.subject,
+        text: "",
+        html: "",
+      },
+    ),
+    "empty text and HTML are not a body",
+  )
+  try testing::assert(
+    has_body(
+      Message{
+        from: base.from,
+        subject: base.subject,
+        text: "",
+        html: "<p>Hi</p>",
+      },
+    ),
+    "falls back to HTML when text is empty",
+  )
+  testing::assert(
+    has_body(
+      Message{
+        from: base.from,
+        subject: base.subject,
+        text: "Hi",
+      },
+    ),
+    "accepts text alone",
+  )
+}
+
+test fn inline_attachments_require_a_content_id() Void!Str {
+  let inline = Attachment{
+    filename: "logo.png",
+    content_type: "image/png",
+    content: "png".bytes(),
+    disposition: Disposition::inline,
+  }
+  let missing = "cloudflare email: inline attachment content ID is required"
+  match validate_attachment(inline) {
+    ok => try testing::fail("an inline attachment without a content ID should fail"),
+    err(message) => try testing::assert(message == missing, "reports the missing content ID"),
+  }
+  match validate_attachment(
+    Attachment{
+      filename: inline.filename,
+      content_type: inline.content_type,
+      content: inline.content,
+      disposition: Disposition::inline,
+      content_id: "  ",
+    },
+  ) {
+    ok => try testing::fail("a blank content ID should fail"),
+    err(message) => try testing::assert(message == missing, "rejects a blank content ID"),
+  }
+  try validate_attachment(
+    Attachment{
+      filename: inline.filename,
+      content_type: inline.content_type,
+      content: inline.content,
+      disposition: Disposition::inline,
+      content_id: "logo",
+    },
+  )
+  validate_attachment(
+    Attachment{
+      filename: inline.filename,
+      content_type: inline.content_type,
+      content: inline.content,
+      disposition: Disposition::attachment,
+    },
+  )
 }
