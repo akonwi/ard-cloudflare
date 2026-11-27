@@ -2,4 +2,4 @@ ard = ">= 0.49.1"
 name = "cloudflare"
 
 [dependencies]
-sql = { git = "https://github.com/akonwi/ard-sql.git", commit = "f5bc03a9fe90714b44eb4e5cc4999f9361c01351" }
+sql = { git = "https://github.com/akonwi/ard-sql.git", commit = "9b3f462a77178fc198f632d61d7f033cafbc5e6b" }
