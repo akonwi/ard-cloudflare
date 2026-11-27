@@ -218,7 +218,7 @@ fn put_bytes(client: Client, bucket: Str, key: Str, body: [Byte], options: PutOp
   put(client, bucket, key, reader, options)
 }
 
-fn download(client: Client, bucket: Str, key: Str, destination: io::Writer, options: GetOptions?) ObjectInfo?!Str {
+fn download(client: Client, bucket: Str, key: Str, destination: io::Writer, options: GetOptions?) (ObjectInfo?)!Str {
   match get(client, bucket, key, options) {
     ok(some(object)) => {
       defer object.Body.Close()
@@ -230,7 +230,7 @@ fn download(client: Client, bucket: Str, key: Str, destination: io::Writer, opti
   }
 }
 
-fn get_bytes(client: Client, bucket: Str, key: Str, max_bytes: Int64, options: GetOptions?) BufferedObject?!Str {
+fn get_bytes(client: Client, bucket: Str, key: Str, max_bytes: Int64, options: GetOptions?) (BufferedObject?)!Str {
   try validate_max_bytes(max_bytes)
   match get(client, bucket, key, options) {
     ok(some(object)) => {
@@ -266,7 +266,7 @@ private fn get(client: Client, bucket: Str, key: Str, options: GetOptions?) Mayb
   }
 }
 
-fn head(client: Client, bucket: Str, key: Str) ObjectInfo?!Str {
+fn head(client: Client, bucket: Str, key: Str) (ObjectInfo?)!Str {
   try validate_object(bucket, key)
   let input = &mut s3::HeadObjectInput{Bucket: aws::String(bucket), Key: aws::String(key)}
   match client.handle.HeadObject(context::Background(), input) {
